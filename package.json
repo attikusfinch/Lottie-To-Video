@@ -1,0 +1,21 @@
+{
+    "name": "lottie-to-video-batch",
+    "version": "1.0.0",
+    "description": "Batch convert Lottie animations to video",
+    "main": "convert-all.js",
+    "scripts": {
+        "convert": "node convert-all.js",
+        "convert-folder": "node convert-folder.js",
+        "webm-to-mov": "node webm-to-mov.js"
+    },
+    "keywords": [
+        "lottie",
+        "video",
+        "converter"
+    ],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "puppeteer": "^22.0.0"
+    }
+}

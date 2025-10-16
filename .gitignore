@@ -1,4 +1,6 @@
-rlottie-web/node_modules
-rlottie-web/package-lock.json
-dist/rlottie-dist
-dist/jszip-dist
+node_modules/
+output/
+output_mov/
+models/
+*.log
+test_output/

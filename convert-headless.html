@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Lottie to Video - Headless</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.10.1/lottie_canvas.min.js"></script>
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <script>
+        // API для программной конвертации
+        window.convertLottieToVideo = async function(jsonData, options = {}) {
+            const canvas = document.getElementById('canvas');
+            // Получаем контекст с альфа-каналом для прозрачности
+            const ctx = canvas.getContext('2d', {
+                alpha: true,
+                willReadFrequently: false
+            });
+
+            // Установить размеры
+            canvas.width = options.width || jsonData.w || 512;
+            canvas.height = options.height || jsonData.h || 512;
+
+            if (ctx.reset) ctx.reset();
+
+            // Очистить canvas с прозрачностью (не заливать белым фоном)
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            return new Promise((resolve, reject) => {
+                try {
+                    // Инициализировать Lottie с поддержкой прозрачности
+                    const animation = lottie.loadAnimation({
+                        renderer: 'canvas',
+                        loop: false,
+                        autoplay: false,
+                        animationData: jsonData,
+                        rendererSettings: {
+                            context: ctx,
+                            clearCanvas: true, // Очищаем между кадрами (с alpha будет прозрачным)
+                            preserveAspectRatio: 'xMidYMid meet',
+                            progressiveLoad: false,
+                        },
+                    });
+
+                    // Установить скорость
+                    const speed = options.speed || 1;
+                    if (speed !== 1) animation.setSpeed(speed);
+
+                    const mimeType = options.mimeType || 'video/webm;codecs="vp9"';
+
+                    // Если PNG sequence - используем другой метод
+                    if (mimeType === 'image/png') {
+                        return handlePngSequence(animation, canvas, resolve, reject);
+                    }
+
+                    // Настроить запись видео
+                    const chunks = [];
+                    const framerate = options.framerate || animation.frameRate;
+                    const stream = canvas.captureStream(framerate);
+                    const bitrate = (options.bitrate || 5120) * 1024;
+
+                    // Настройки для поддержки прозрачности (альфа-канал)
+                    const recorderOptions = {
+                        mimeType: mimeType,
+                        videoBitsPerSecond: bitrate,
+                    };
+
+                    // Для VP8/VP9 включаем alpha channel для прозрачности
+                    if (mimeType.includes('vp8') || mimeType.includes('vp9')) {
+                        // Браузер автоматически использует alpha channel если canvas имеет прозрачность
+                    }
+
+                    const recorder = new MediaRecorder(stream, recorderOptions);
+
+                    recorder.ondataavailable = (e) => chunks.push(e.data);
+
+                    recorder.onstop = async() => {
+                        try {
+                            const blob = new Blob(chunks, {
+                                type: mimeType
+                            });
+                            const buffer = await blob.arrayBuffer();
+                            resolve({
+                                success: true,
+                                data: Array.from(new Uint8Array(buffer)),
+                                duration: animation.getDuration(),
+                                frames: animation.getDuration(true),
+                                fps: animation.frameRate,
+                                width: canvas.width,
+                                height: canvas.height,
+                            });
+                        } catch (error) {
+                            reject(error);
+                        }
+                    };
+
+                    recorder.onerror = (error) => {
+                        reject(error);
+                    };
+
+                    animation.onComplete = () => {
+                        // Небольшая задержка для завершения записи последнего кадра
+                        setTimeout(() => {
+                            try {
+                                recorder.stop();
+                            } catch (e) {
+                                reject(e);
+                            }
+                        }, 100);
+                    };
+
+                    // Запустить запись и анимацию
+                    recorder.start();
+                    animation.play();
+
+                    // Timeout на случай зависания
+                    setTimeout(() => {
+                        if (recorder.state === 'recording') {
+                            recorder.stop();
+                            reject(new Error('Превышено время ожидания рендеринга (60s)'));
+                        }
+                    }, 60000);
+
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        };
+
+
+        // Обработка PNG sequence
+        async function handlePngSequence(animation, canvas, resolve, reject) {
+            const frames = animation.totalFrames;
+            const pngBlobs = [];
+            let currentFrame = 0;
+
+            animation.goToAndStop(0, true);
+
+            async function captureFrame() {
+                if (currentFrame >= frames) {
+                    // Все кадры захвачены, создаем ZIP
+                    try {
+                        const zip = new JSZip();
+
+                        for (let i = 0; i < pngBlobs.length; i++) {
+                            const paddedIndex = String(i).padStart(5, '0');
+                            zip.file(`frame_${paddedIndex}.png`, pngBlobs[i]);
+                        }
+
+                        const zipBlob = await zip.generateAsync({
+                            type: 'arraybuffer'
+                        });
+
+                        resolve({
+                            success: true,
+                            data: Array.from(new Uint8Array(zipBlob)),
+                            duration: animation.getDuration(),
+                            frames: frames,
+                            fps: animation.frameRate,
+                            width: canvas.width,
+                            height: canvas.height,
+                        });
+                    } catch (error) {
+                        reject(error);
+                    }
+                    return;
+                }
+
+                animation.goToAndStop(currentFrame, true);
+
+                canvas.toBlob((blob) => {
+                    if (blob) {
+                        pngBlobs.push(blob);
+                        currentFrame++;
+                        setTimeout(captureFrame, 0);
+                    } else {
+                        reject(new Error('Не удалось создать PNG blob'));
+                    }
+                }, 'image/png');
+            }
+
+            captureFrame();
+        }
+
+        // Сообщить что страница готова
+        window.converterReady = true;
+    </script>
+</body>
+
+</html>
