@@ -3,127 +3,59 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Lottie to Video - Headless</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.10.1/lottie_canvas.min.js"></script>
+    <title>Lottie to MOV - SVG Renderer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.10.1/lottie.min.js"></script>
 </head>
 
 <body>
-    <canvas id="canvas"></canvas>
+    <div id="lottie-container" style="position: absolute; top: 0; left: 0;"></div>
+    <canvas id="canvas" style="position: absolute; top: 0; left: 0; display: none;"></canvas>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
     <script>
-        // API для программной конвертации
+        // API для конвертации Lottie через SVG рендерер
         window.convertLottieToVideo = async function(jsonData, options = {}) {
+            const container = document.getElementById('lottie-container');
             const canvas = document.getElementById('canvas');
-            // Получаем контекст с альфа-каналом для прозрачности
+
             const ctx = canvas.getContext('2d', {
                 alpha: true,
                 willReadFrequently: false
             });
 
             // Установить размеры
-            canvas.width = options.width || jsonData.w || 512;
-            canvas.height = options.height || jsonData.h || 512;
+            const width = options.width || jsonData.w || 512;
+            const height = options.height || jsonData.h || 512;
 
-            if (ctx.reset) ctx.reset();
+            canvas.width = width;
+            canvas.height = height;
+            container.style.width = width + 'px';
+            container.style.height = height + 'px';
 
-            // Очистить canvas с прозрачностью (не заливать белым фоном)
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            container.innerHTML = '';
+            ctx.clearRect(0, 0, width, height);
 
             return new Promise((resolve, reject) => {
                 try {
-                    // Инициализировать Lottie с поддержкой прозрачности
+                    // SVG рендерер для качественных градиентов
                     const animation = lottie.loadAnimation({
-                        renderer: 'canvas',
+                        container: container,
+                        renderer: 'svg',
                         loop: false,
                         autoplay: false,
                         animationData: jsonData,
                         rendererSettings: {
-                            context: ctx,
-                            clearCanvas: true, // Очищаем между кадрами (с alpha будет прозрачным)
                             preserveAspectRatio: 'xMidYMid meet',
                             progressiveLoad: false,
+                            hideOnTransparent: true,
                         },
                     });
 
-                    // Установить скорость
                     const speed = options.speed || 1;
                     if (speed !== 1) animation.setSpeed(speed);
 
-                    const mimeType = options.mimeType || 'video/webm;codecs="vp9"';
-
-                    // Если PNG sequence - используем другой метод
-                    if (mimeType === 'image/png') {
-                        return handlePngSequence(animation, canvas, resolve, reject);
-                    }
-
-                    // Настроить запись видео
-                    const chunks = [];
-                    const framerate = options.framerate || animation.frameRate;
-                    const stream = canvas.captureStream(framerate);
-                    const bitrate = (options.bitrate || 5120) * 1024;
-
-                    // Настройки для поддержки прозрачности (альфа-канал)
-                    const recorderOptions = {
-                        mimeType: mimeType,
-                        videoBitsPerSecond: bitrate,
-                    };
-
-                    // Для VP8/VP9 включаем alpha channel для прозрачности
-                    if (mimeType.includes('vp8') || mimeType.includes('vp9')) {
-                        // Браузер автоматически использует alpha channel если canvas имеет прозрачность
-                    }
-
-                    const recorder = new MediaRecorder(stream, recorderOptions);
-
-                    recorder.ondataavailable = (e) => chunks.push(e.data);
-
-                    recorder.onstop = async() => {
-                        try {
-                            const blob = new Blob(chunks, {
-                                type: mimeType
-                            });
-                            const buffer = await blob.arrayBuffer();
-                            resolve({
-                                success: true,
-                                data: Array.from(new Uint8Array(buffer)),
-                                duration: animation.getDuration(),
-                                frames: animation.getDuration(true),
-                                fps: animation.frameRate,
-                                width: canvas.width,
-                                height: canvas.height,
-                            });
-                        } catch (error) {
-                            reject(error);
-                        }
-                    };
-
-                    recorder.onerror = (error) => {
-                        reject(error);
-                    };
-
-                    animation.onComplete = () => {
-                        // Небольшая задержка для завершения записи последнего кадра
-                        setTimeout(() => {
-                            try {
-                                recorder.stop();
-                            } catch (e) {
-                                reject(e);
-                            }
-                        }, 100);
-                    };
-
-                    // Запустить запись и анимацию
-                    recorder.start();
-                    animation.play();
-
-                    // Timeout на случай зависания
-                    setTimeout(() => {
-                        if (recorder.state === 'recording') {
-                            recorder.stop();
-                            reject(new Error('Превышено время ожидания рендеринга (60s)'));
-                        }
-                    }, 60000);
+                    // PNG sequence метод
+                    handlePngSequence(animation, container, canvas, ctx, options, resolve, reject);
 
                 } catch (error) {
                     reject(error);
@@ -131,62 +63,95 @@
             });
         };
 
-
-        // Обработка PNG sequence
-        async function handlePngSequence(animation, canvas, resolve, reject) {
-            const frames = animation.totalFrames;
-            const pngBlobs = [];
+        // PNG sequence: рендерим SVG → Canvas → PNG
+        async function handlePngSequence(animation, container, canvas, ctx, options, resolve, reject) {
+            const totalFrames = animation.totalFrames;
+            const framerate = options.framerate || animation.frameRate;
+            const pngDataUrls = [];
             let currentFrame = 0;
+
+            console.log(`SVG рендеринг: ${totalFrames} кадров @ ${framerate} fps`);
 
             animation.goToAndStop(0, true);
 
             async function captureFrame() {
-                if (currentFrame >= frames) {
-                    // Все кадры захвачены, создаем ZIP
-                    try {
-                        const zip = new JSZip();
+                if (currentFrame >= totalFrames) {
+                    console.log(`✓ Все ${totalFrames} кадров отрендерены`);
 
-                        for (let i = 0; i < pngBlobs.length; i++) {
-                            const paddedIndex = String(i).padStart(5, '0');
-                            zip.file(`frame_${paddedIndex}.png`, pngBlobs[i]);
-                        }
-
-                        const zipBlob = await zip.generateAsync({
-                            type: 'arraybuffer'
-                        });
-
-                        resolve({
-                            success: true,
-                            data: Array.from(new Uint8Array(zipBlob)),
-                            duration: animation.getDuration(),
-                            frames: frames,
-                            fps: animation.frameRate,
-                            width: canvas.width,
-                            height: canvas.height,
-                        });
-                    } catch (error) {
-                        reject(error);
-                    }
+                    resolve({
+                        success: true,
+                        frames: pngDataUrls,
+                        duration: animation.getDuration(),
+                        totalFrames: totalFrames,
+                        fps: framerate,
+                        width: canvas.width,
+                        height: canvas.height,
+                    });
                     return;
                 }
 
-                animation.goToAndStop(currentFrame, true);
+                try {
+                    animation.goToAndStop(currentFrame, true);
+                    await new Promise(resolve => setTimeout(resolve, 50));
 
-                canvas.toBlob((blob) => {
-                    if (blob) {
-                        pngBlobs.push(blob);
-                        currentFrame++;
-                        setTimeout(captureFrame, 0);
-                    } else {
-                        reject(new Error('Не удалось создать PNG blob'));
+                    const svgElement = container.querySelector('svg');
+                    if (!svgElement) {
+                        throw new Error('SVG элемент не найден');
                     }
-                }, 'image/png');
+
+                    await drawSVGOnCanvas(svgElement, ctx, canvas.width, canvas.height);
+
+                    const dataUrl = canvas.toDataURL('image/png');
+                    pngDataUrls.push(dataUrl);
+
+                    currentFrame++;
+
+                    if (currentFrame % 10 === 0 || currentFrame === totalFrames) {
+                        console.log(`  ${currentFrame}/${totalFrames} кадров`);
+                    }
+
+                    setTimeout(captureFrame, 0);
+
+                } catch (error) {
+                    reject(new Error(`Ошибка на кадре ${currentFrame}: ${error.message}`));
+                }
             }
 
             captureFrame();
         }
 
-        // Сообщить что страница готова
+        // Рисование SVG на Canvas
+        async function drawSVGOnCanvas(svgElement, ctx, width, height) {
+            return new Promise((resolve, reject) => {
+                try {
+                    ctx.clearRect(0, 0, width, height);
+
+                    const svgClone = svgElement.cloneNode(true);
+                    svgClone.setAttribute('width', width);
+                    svgClone.setAttribute('height', height);
+
+                    const svgString = new XMLSerializer().serializeToString(svgClone);
+                    const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+
+                    const img = new Image();
+
+                    img.onload = () => {
+                        ctx.drawImage(img, 0, 0, width, height);
+                        resolve();
+                    };
+
+                    img.onerror = () => {
+                        reject(new Error('Не удалось загрузить SVG'));
+                    };
+
+                    img.src = svgDataUrl;
+
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        }
+
         window.converterReady = true;
     </script>
 </body>

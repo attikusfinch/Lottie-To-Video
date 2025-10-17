@@ -4,3 +4,4 @@ output_mov/
 models/
 *.log
 test_output/
+models-done/
